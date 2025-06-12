@@ -1,5 +1,5 @@
 <?php
-// Enhanced Email Service with Configuration Support
+// Enhanced Email Service with SMTP Support
 class EmailService {
     private $config;
     
@@ -10,9 +10,9 @@ class EmailService {
         } else {
             // Default configuration
             $this->config = [
-                'from_email' => 'noreply@oldschoolbarber.com',
+                'from_email' => 'noreply@' . $_SERVER['HTTP_HOST'],
                 'from_name' => 'Old School Barber',
-                'reply_to' => 'info@oldschoolbarber.com',
+                'reply_to' => 'info@' . $_SERVER['HTTP_HOST'],
                 'business_name' => 'Old School Barber',
                 'business_tagline' => 'Tradizione, stile e passione dal 1985',
                 'business_phone' => '+39 123 456 7890',
@@ -21,6 +21,7 @@ class EmailService {
                 'website_url' => '',
                 'smtp_enabled' => false,
                 'include_cancellation_link' => true,
+                'send_admin_notifications' => false,
                 'important_notes' => [
                     'Ti preghiamo di arrivare 5 minuti prima dell\'orario prenotato',
                     'In caso di ritardo superiore a 15 minuti, la prenotazione potrebbe essere cancellata',
@@ -59,6 +60,141 @@ class EmailService {
         $text_body = $this->generateAdminNotificationText($booking_data);
         
         return $this->sendEmail($this->config['admin_email'], $subject, $html_body, $text_body);
+    }
+    
+    private function sendEmail($to_email, $subject, $html_body, $text_body) {
+        // Use SMTP if enabled and configured
+        if (!empty($this->config['smtp_enabled']) && !empty($this->config['smtp_host'])) {
+            return $this->sendSMTPEmail($to_email, $subject, $html_body, $text_body);
+        } else {
+            return $this->sendPHPMail($to_email, $subject, $html_body, $text_body);
+        }
+    }
+    
+    private function sendSMTPEmail($to_email, $subject, $html_body, $text_body) {
+        // Simple SMTP implementation
+        $smtp_host = $this->config['smtp_host'];
+        $smtp_port = $this->config['smtp_port'] ?? 587;
+        $smtp_username = $this->config['smtp_username'];
+        $smtp_password = $this->config['smtp_password'];
+        $smtp_encryption = $this->config['smtp_encryption'] ?? 'tls';
+        
+        // Create socket connection
+        $context = stream_context_create([
+            'ssl' => [
+                'verify_peer' => false,
+                'verify_peer_name' => false,
+                'allow_self_signed' => true
+            ]
+        ]);
+        
+        $connection_string = ($smtp_encryption === 'ssl') ? "ssl://$smtp_host:$smtp_port" : "$smtp_host:$smtp_port";
+        $socket = stream_socket_client($connection_string, $errno, $errstr, 30, STREAM_CLIENT_CONNECT, $context);
+        
+        if (!$socket) {
+            error_log("SMTP connection failed: $errstr ($errno)");
+            return false;
+        }
+        
+        // Read initial response
+        $response = fgets($socket, 512);
+        if (substr($response, 0, 3) !== '220') {
+            fclose($socket);
+            return false;
+        }
+        
+        // SMTP conversation
+        $commands = [
+            "EHLO " . $_SERVER['HTTP_HOST'],
+        ];
+        
+        // Start TLS if needed
+        if ($smtp_encryption === 'tls') {
+            $commands[] = "STARTTLS";
+        }
+        
+        foreach ($commands as $command) {
+            fwrite($socket, $command . "\r\n");
+            $response = fgets($socket, 512);
+            
+            if ($command === "STARTTLS" && substr($response, 0, 3) === '220') {
+                stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT);
+                fwrite($socket, "EHLO " . $_SERVER['HTTP_HOST'] . "\r\n");
+                fgets($socket, 512);
+            }
+        }
+        
+        // Authentication
+        fwrite($socket, "AUTH LOGIN\r\n");
+        fgets($socket, 512);
+        
+        fwrite($socket, base64_encode($smtp_username) . "\r\n");
+        fgets($socket, 512);
+        
+        fwrite($socket, base64_encode($smtp_password) . "\r\n");
+        $auth_response = fgets($socket, 512);
+        
+        if (substr($auth_response, 0, 3) !== '235') {
+            fclose($socket);
+            return false;
+        }
+        
+        // Send email
+        fwrite($socket, "MAIL FROM: <" . $this->config['from_email'] . ">\r\n");
+        fgets($socket, 512);
+        
+        fwrite($socket, "RCPT TO: <$to_email>\r\n");
+        fgets($socket, 512);
+        
+        fwrite($socket, "DATA\r\n");
+        fgets($socket, 512);
+        
+        // Email headers and body
+        $email_data = "From: " . $this->config['from_name'] . " <" . $this->config['from_email'] . ">\r\n";
+        $email_data .= "To: $to_email\r\n";
+        $email_data .= "Subject: $subject\r\n";
+        $email_data .= "MIME-Version: 1.0\r\n";
+        $email_data .= "Content-Type: text/html; charset=UTF-8\r\n";
+        $email_data .= "Content-Transfer-Encoding: 8bit\r\n";
+        $email_data .= "\r\n";
+        $email_data .= $html_body;
+        $email_data .= "\r\n.\r\n";
+        
+        fwrite($socket, $email_data);
+        $response = fgets($socket, 512);
+        
+        fwrite($socket, "QUIT\r\n");
+        fclose($socket);
+        
+        return substr($response, 0, 3) === '250';
+    }
+    
+    private function sendPHPMail($to_email, $subject, $html_body, $text_body) {
+        // Prepare headers
+        $headers = array();
+        $headers[] = 'MIME-Version: 1.0';
+        $headers[] = 'Content-Type: text/html; charset=UTF-8';
+        $headers[] = 'From: ' . $this->config['from_name'] . ' <' . $this->config['from_email'] . '>';
+        $headers[] = 'Reply-To: ' . $this->config['reply_to'];
+        $headers[] = 'X-Mailer: PHP/' . phpversion();
+        $headers[] = 'X-Priority: 3';
+        
+        // Try to send HTML email first
+        $success = mail($to_email, $subject, $html_body, implode("\r\n", $headers));
+        
+        // If HTML fails, try plain text
+        if (!$success) {
+            $headers_text = array();
+            $headers_text[] = 'MIME-Version: 1.0';
+            $headers_text[] = 'Content-Type: text/plain; charset=UTF-8';
+            $headers_text[] = 'From: ' . $this->config['from_name'] . ' <' . $this->config['from_email'] . '>';
+            $headers_text[] = 'Reply-To: ' . $this->config['reply_to'];
+            $headers_text[] = 'X-Mailer: PHP/' . phpversion();
+            
+            $success = mail($to_email, $subject, $text_body, implode("\r\n", $headers_text));
+        }
+        
+        return $success;
     }
     
     private function generateBookingEmailHTML($data) {
@@ -440,34 +576,6 @@ class EmailService {
         $text .= "Accedi al pannello di amministrazione per gestire questa prenotazione.";
         
         return $text;
-    }
-    
-    private function sendEmail($to_email, $subject, $html_body, $text_body) {
-        // Prepare headers
-        $headers = array();
-        $headers[] = 'MIME-Version: 1.0';
-        $headers[] = 'Content-Type: text/html; charset=UTF-8';
-        $headers[] = 'From: ' . $this->config['from_name'] . ' <' . $this->config['from_email'] . '>';
-        $headers[] = 'Reply-To: ' . $this->config['reply_to'];
-        $headers[] = 'X-Mailer: PHP/' . phpversion();
-        $headers[] = 'X-Priority: 3';
-        
-        // Try to send HTML email first
-        $success = mail($to_email, $subject, $html_body, implode("\r\n", $headers));
-        
-        // If HTML fails, try plain text
-        if (!$success) {
-            $headers_text = array();
-            $headers_text[] = 'MIME-Version: 1.0';
-            $headers_text[] = 'Content-Type: text/plain; charset=UTF-8';
-            $headers_text[] = 'From: ' . $this->config['from_name'] . ' <' . $this->config['from_email'] . '>';
-            $headers_text[] = 'Reply-To: ' . $this->config['reply_to'];
-            $headers_text[] = 'X-Mailer: PHP/' . phpversion();
-            
-            $success = mail($to_email, $subject, $text_body, implode("\r\n", $headers_text));
-        }
-        
-        return $success;
     }
     
     private function getCurrentUrl() {

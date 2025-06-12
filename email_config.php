@@ -16,13 +16,13 @@ return [
     'business_hours' => 'Mar-Sab 9:00-18:30',
     'website_url' => 'https://www.oldschoolbarber.com',
     
-    // SMTP settings (optional - for advanced email sending)
-    'smtp_enabled' => true, // Set to true to use SMTP instead of PHP mail()
+    // SMTP settings (recommended for production)
+    'smtp_enabled' => true,
     'smtp_host' => 'mail.verificaprezzo.eu',
-    'smtp_port' => 465,
+    'smtp_port' => 587, // Changed from 465 to 587 for better compatibility
     'smtp_username' => 'admin@verificaprezzo.eu',
     'smtp_password' => 'Giovanni123!',
-    'smtp_encryption' => 'ssl', // 'tls' or 'ssl'
+    'smtp_encryption' => 'tls', // Changed from 'ssl' to 'tls' for port 587
     
     // Email templates settings
     'include_logo' => true,
@@ -34,7 +34,7 @@ return [
     
     // Email features
     'send_admin_notifications' => true, // Send notifications to admin when new booking is made
-    'admin_email' => 'admin@oldschoolbarber.com',
+    'admin_email' => 'admin@verificaprezzo.eu',
     'include_cancellation_link' => true,
     'include_business_info' => true,
     
